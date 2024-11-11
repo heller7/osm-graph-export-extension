@@ -1,4 +1,4 @@
-# osm-networkx-graphs - an OSM Graph Generator Chrome Extension
+# osm-graph-export-extension (ogee) - an OSM Graph Generator Chrome Extension
 
 A Chrome extension that generates graph representations of OpenStreetMap road networks. This tool allows users to select an area on OpenStreetMap and export the road network as a graph in various formats.
 

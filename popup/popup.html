@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OSM Graph Generator</title>
+  <link rel="stylesheet" href="../styles/popup.css">
+</head>
+<body>
+  <div class="container">
+    <h2>OSM Graph Generator</h2>
+    
+    <div class="status-section">
+      <h3>Current Graph</h3>
+      <div id="graphStatus">No graph generated yet</div>
+    </div>
+
+    <div class="export-section">
+      <h3>Export Options</h3>
+      <select id="exportFormat">
+        <option value="json">JSON</option>
+        <option value="graphml">GraphML</option>
+      </select>
+      <button id="exportGraph" disabled>Export Graph</button>
+    </div>
+
+    <div class="settings-section">
+      <h3>Settings</h3>
+      <label>
+        <input type="checkbox" id="excludeService">
+        Exclude service roads
+      </label>
+      <label>
+        <input type="checkbox" id="excludeFootways">
+        Exclude footways/cycleways
+      </label>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html> 

@@ -16,7 +16,7 @@ A Chrome extension that generates graph representations of OpenStreetMap road ne
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/osm-graph-export-extension.git
+   git clone https://github.com/heller7/osm-graph-export-extension.git
    ```
 
 2. Open Chrome and navigate to `chrome://extensions/`

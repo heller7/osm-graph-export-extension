@@ -2,28 +2,36 @@ document.addEventListener('DOMContentLoaded', () => {
     const graphStatus = document.getElementById('graphStatus');
     const exportFormat = document.getElementById('exportFormat');
     const exportButton = document.getElementById('exportGraph');
-    
+
+    let graphData = null;
+
     // Check if there's any graph data available
     chrome.runtime.sendMessage({ type: 'GET_GRAPH' }, response => {
-        if (response.success && response.data) {
-            const graph = response.data;
-            graphStatus.textContent = `Graph contains ${graph.nodes.length} nodes and ${graph.edges.length} edges`;
+        if (response && response.success && response.data) {
+            graphData = response.data;
+            graphStatus.textContent = `Graph contains ${graphData.nodes.length} nodes and ${graphData.edges.length} edges`;
             exportButton.disabled = false;
         }
     });
 
     // Handle export
     exportButton.addEventListener('click', () => {
+        if (!graphData) {
+            graphStatus.textContent = 'No graph data available to export';
+            return;
+        }
+
         chrome.runtime.sendMessage({
             type: 'EXPORT_GRAPH',
-            format: exportFormat.value
+            format: exportFormat.value,
+            data: graphData
         }, response => {
-            if (response.success) {
+            if (response && response.success) {
                 // Create and trigger download
-                const blob = new Blob([response.data], { 
-                    type: exportFormat.value === 'json' 
-                        ? 'application/json' 
-                        : 'application/xml' 
+                const blob = new Blob([response.data], {
+                    type: exportFormat.value === 'json'
+                        ? 'application/json'
+                        : 'application/xml'
                 });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -31,6 +39,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 a.download = `osm-graph.${exportFormat.value}`;
                 a.click();
                 URL.revokeObjectURL(url);
+            } else {
+                graphStatus.textContent = response ? response.error : 'Export failed';
             }
         });
     });

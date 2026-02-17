@@ -1,5 +1,14 @@
+/* Ensure the header stacks above #content (which is position:absolute) */
+header {
+    z-index: 1001 !important;
+}
+
 .osm-graph-toast {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.osm-graph-settings-panel {
+    pointer-events: auto;
 }
 
 .leaflet-draw-toolbar a {
@@ -10,4 +19,4 @@
 
 .leaflet-draw-toolbar a:hover {
     background-color: #f4f4f4;
-} 
+}

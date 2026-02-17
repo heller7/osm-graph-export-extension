@@ -72,53 +72,28 @@ if (window.location.hostname === "www.openstreetmap.org") {
      * Create and add the extension button to OSM's navigation bar
      */
     setupInterface() {
-      // Find OSM's primary navigation
-      const primaryNav = document.querySelector("nav.primary");
-      if (!primaryNav) {
-        console.error("Primary navigation not found");
+      // Find OSM's secondary navigation list (History, Export, etc.)
+      const navList = document.querySelector("nav.secondary ul#secondary-nav-menu");
+      if (!navList) {
+        console.error("Secondary navigation not found");
         return;
       }
 
-      // Create container for our button
-      const buttonContainer = document.createElement("div");
-      buttonContainer.className = "nav-item";
-      buttonContainer.style.cssText = `
-        display: inline-block;
-        margin-left: 10px;
-      `;
+      // Create nav item matching OSM's structure: <li class="nav-item"><a class="nav-link text-secondary">
+      const listItem = document.createElement("li");
+      listItem.className = "nav-item";
 
-      // Create the main button
-      this.generateButton = document.createElement("button");
-      this.generateButton.innerHTML = "Generate Graph";
-      this.generateButton.className = "nav-item-link";
-      this.generateButton.style.cssText = `
-        background: #7ebc6f;
-        color: white;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 14px;
-        padding: 5px 10px;
-        margin: 5px;
-        font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen-Sans,Ubuntu,Cantarell,"Helvetica Neue",sans-serif;
-      `;
-
-      // Add hover effects
-      this.generateButton.addEventListener("mouseover", () => {
-        this.generateButton.style.background = "#6ea05f";
-      });
-      this.generateButton.addEventListener("mouseout", () => {
-        this.generateButton.style.background = "#7ebc6f";
-      });
-
-      // Handle button clicks
-      this.generateButton.addEventListener("click", () => {
+      this.generateButton = document.createElement("a");
+      this.generateButton.textContent = "Export";
+      this.generateButton.className = "nav-link text-secondary";
+      this.generateButton.href = "#";
+      this.generateButton.addEventListener("click", (e) => {
+        e.preventDefault();
         this.toggleSettingsPanel();
       });
 
-      // Add button to the page
-      buttonContainer.appendChild(this.generateButton);
-      primaryNav.appendChild(buttonContainer);
+      listItem.appendChild(this.generateButton);
+      navList.appendChild(listItem);
     }
 
     /**
@@ -152,12 +127,14 @@ if (window.location.hostname === "www.openstreetmap.org") {
       this.settingsPanel.className = "osm-graph-settings-panel";
       this.settingsPanel.style.cssText = `
         position: relative;
+        z-index: 10000;
         width: 100%;
         background: white;
         padding: 20px;
         box-sizing: border-box;
         display: none;
         border-bottom: 1px solid #ccc;
+        overflow-y: auto;
     `;
 
       this.settingsPanel.innerHTML = `
@@ -222,8 +199,8 @@ if (window.location.hostname === "www.openstreetmap.org") {
         </div>
     `;
 
-      // Find the sidebar
-      const sidebar = document.getElementById('sidebar_content');
+      // Find the sidebar (use #sidebar, not #sidebar_content, to match toggleSettingsPanel)
+      const sidebar = document.getElementById('sidebar');
       if (sidebar) {
           // Insert the panel at the top of the sidebar
           if (sidebar.firstChild) {
@@ -383,7 +360,28 @@ if (window.location.hostname === "www.openstreetmap.org") {
         west: parseFloat(this.settingsPanel.querySelector('#west').value)
       };
 
+      // Validate coordinates
+      if (Object.values(coords).some(v => isNaN(v))) {
+        this.showToast("Error: All coordinates must be valid numbers", "error");
+        return;
+      }
+      if (coords.north <= coords.south) {
+        this.showToast("Error: North must be greater than South", "error");
+        return;
+      }
+      if (coords.east <= coords.west) {
+        this.showToast("Error: East must be greater than West", "error");
+        return;
+      }
+
+      const generateButton = this.settingsPanel.querySelector("#generateGraph");
+
       this.showToast("Generating graph...");
+
+      // Disable button during request
+      if (generateButton) {
+        generateButton.disabled = true;
+      }
 
       // Check for Chrome extension API availability
       if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
@@ -393,11 +391,16 @@ if (window.location.hostname === "www.openstreetmap.org") {
             type: "FETCH_OSM_DATA",
             bounds: coords
           }, response => {
+            // Re-enable generate button
+            if (generateButton) {
+              generateButton.disabled = false;
+            }
+
             // Handle response
             if (response && response.success) {
               this.graphData = response.data;
               this.showToast("Graph generated successfully!");
-              
+
               // Enable export functionality
               const exportButton = this.settingsPanel.querySelector("#exportGraph");
               if (exportButton) {
@@ -410,10 +413,16 @@ if (window.location.hostname === "www.openstreetmap.org") {
             }
           });
         } catch (error) {
+          if (generateButton) {
+            generateButton.disabled = false;
+          }
           console.error("Message sending error:", error);
           this.showToast("Error: Could not communicate with extension", "error");
         }
       } else {
+        if (generateButton) {
+          generateButton.disabled = false;
+        }
         console.error("Chrome extension API not available");
         this.showToast("Error: Extension context not available", "error");
       }

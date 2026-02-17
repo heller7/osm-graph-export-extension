@@ -7,38 +7,69 @@ import {
     validateBounds,
     buildOverpassQuery,
     convertToGraph,
-    convertToGraphML
+    convertToGraphML,
+    convertToCSV,
+    convertToTikZ,
+    splitBounds,
+    mergeOsmData
 } from '../lib/graph-utils.js';
 
 // Constants for API endpoints
 const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
 
+// Threshold in degrees — areas larger than this get tiled
+const TILE_THRESHOLD = 0.1;
+
 // Cache for storing temporary graph data between operations
 let graphCache = null;
 
 /**
- * Fetches OSM data using the Overpass API
- * @param {Object} bounds - Bounding box coordinates
+ * Fetches a single tile of OSM data from Overpass API
+ * @param {Object} bounds - Bounding box coordinates for one tile
  * @returns {Promise<Object>} JSON response from Overpass API
- * @throws {Error} If the fetch request fails
+ */
+async function fetchTile(bounds) {
+    const query = buildOverpassQuery(bounds);
+    const response = await fetch(OVERPASS_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ data: query })
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
+}
+
+/**
+ * Fetches OSM data, tiling large areas automatically
+ * @param {Object} bounds - Bounding box coordinates
+ * @returns {Promise<Object>} JSON response (merged if tiled)
  */
 async function fetchOsmData(bounds) {
     try {
         validateBounds(bounds);
-        const query = buildOverpassQuery(bounds);
-        const response = await fetch(OVERPASS_API, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({ data: query })
-        });
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+        const latSpan = bounds.north - bounds.south;
+        const lonSpan = bounds.east - bounds.west;
+        const needsTiling = latSpan > TILE_THRESHOLD || lonSpan > TILE_THRESHOLD;
+
+        if (!needsTiling) {
+            return await fetchTile(bounds);
         }
 
-        return await response.json();
+        // Split into tiles and fetch sequentially to avoid rate-limiting
+        const tiles = splitBounds(bounds);
+        console.log(`Fetching ${tiles.length} tiles for large area`);
+
+        const results = [];
+        for (const tile of tiles) {
+            results.push(await fetchTile(tile));
+        }
+
+        return mergeOsmData(results);
     } catch (error) {
         console.error('Error fetching OSM data:', error);
         throw error;
@@ -47,10 +78,6 @@ async function fetchOsmData(bounds) {
 
 /**
  * Handle messages from content script and popup
- * Supports three operations:
- * 1. FETCH_OSM_DATA: Fetches and converts OSM data to graph
- * 2. GET_GRAPH: Returns cached graph data
- * 3. EXPORT_GRAPH: Exports graph in specified format
  */
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Received message:', request.type);
@@ -89,6 +116,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 exportData = JSON.stringify(graphData, null, 2);
             } else if (request.format === 'graphml') {
                 exportData = convertToGraphML(graphData);
+            } else if (request.format === 'csv') {
+                exportData = convertToCSV(graphData);
+            } else if (request.format === 'tikz') {
+                exportData = convertToTikZ(graphData);
             } else {
                 sendResponse({ success: false, error: 'Unsupported format' });
                 return false;

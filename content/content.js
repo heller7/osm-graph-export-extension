@@ -16,7 +16,6 @@ if (window.location.hostname === "www.openstreetmap.org") {
     constructor() {
       this.generateButton = null;      // Button in the navigation bar
       this.settingsPanel = null;       // Panel containing settings and controls
-      this.isPanelOpen = false;        // Track panel visibility state
       this.graphData = null;           // Store generated graph data
     }
 
@@ -32,39 +31,10 @@ if (window.location.hostname === "www.openstreetmap.org") {
 
     /**
      * Set up listeners for map coordinate changes
-     * Handles URL hash changes and DOM mutations
      */
     setupMapChangeListener() {
-      // Listen for URL hash changes (when map moves)
       window.addEventListener('hashchange', () => {
-        console.log('Hash changed, updating coordinates');
         this.updateCoordinates();
-      });
-
-      // Commented out native map event listener (alternative approach)
-      // const checkForMap = setInterval(() => {
-      //   if (window.map) {
-      //     window.map.on('moveend', () => {
-      //       this.updateCoordinates();
-      //     });
-      //     clearInterval(checkForMap);
-      //   }
-      // }, 100);
-
-      // Fallback: Watch for URL changes using MutationObserver
-      const observer = new MutationObserver((mutations) => {
-        mutations.forEach((mutation) => {
-          if (mutation.type === 'attributes' && mutation.attributeName === 'href') {
-            this.updateCoordinates();
-          }
-        });
-      });
-
-      // Start observing URL changes
-      observer.observe(document.querySelector('head > base') || document.querySelector('body'), {
-        attributes: true,
-        childList: true,
-        subtree: true
       });
     }
 
@@ -188,12 +158,20 @@ if (window.location.hostname === "www.openstreetmap.org") {
         </div>
         <div class="settings-section">
             <button id="generateGraph" class="settings-button">Generate Graph</button>
+            <div id="graphPreview" style="display:none; margin-top:10px;">
+                <canvas id="previewCanvas" width="260" height="180" style="
+                    width:100%; border:1px solid #ccc; border-radius:4px; background:#f9f9f9;
+                "></canvas>
+                <div id="graphStats" style="font-size:12px; color:#666; margin-top:4px;"></div>
+            </div>
         </div>
         <div class="settings-section">
             <h4>Export Options</h4>
             <select id="exportFormat" style="width: 100%; margin-bottom: 10px;">
                 <option value="json">JSON</option>
                 <option value="graphml">GraphML</option>
+                <option value="csv">CSV (edge list)</option>
+                <option value="tikz">LaTeX TikZ</option>
             </select>
             <button id="exportGraph" class="settings-button">Export Graph</button>
         </div>
@@ -396,10 +374,16 @@ if (window.location.hostname === "www.openstreetmap.org") {
               generateButton.disabled = false;
             }
 
+            if (chrome.runtime.lastError) {
+              this.showToast("Extension error: " + chrome.runtime.lastError.message, "error");
+              return;
+            }
+
             // Handle response
             if (response && response.success) {
               this.graphData = response.data;
               this.showToast("Graph generated successfully!");
+              this.renderPreview(response.data);
 
               // Enable export functionality
               const exportButton = this.settingsPanel.querySelector("#exportGraph");
@@ -448,15 +432,21 @@ if (window.location.hostname === "www.openstreetmap.org") {
             format: format,
             data: this.graphData
           }, response => {
+            if (chrome.runtime.lastError) {
+              this.showToast("Extension error: " + chrome.runtime.lastError.message, "error");
+              return;
+            }
             if (response && response.success) {
               // Create and trigger download
+              const mimeTypes = { json: "application/json", graphml: "application/xml", csv: "text/csv", tikz: "application/x-tex" };
               const blob = new Blob([response.data], {
-                type: format === "json" ? "application/json" : "application/xml"
+                type: mimeTypes[format] || "text/plain"
               });
               const url = URL.createObjectURL(blob);
               const a = document.createElement("a");
               a.href = url;
-              a.download = `osm-graph.${format}`;
+              const extensions = { tikz: 'tex' };
+              a.download = `osm-graph.${extensions[format] || format}`;
               a.click();
               URL.revokeObjectURL(url);
               this.showToast("Graph exported successfully!");
@@ -479,20 +469,18 @@ if (window.location.hostname === "www.openstreetmap.org") {
      * Toggle visibility of settings panel and handle sidebar state
      */
     toggleSettingsPanel() {
-      this.isPanelOpen = !this.isPanelOpen;
-      
-      // Get sidebar elements
+      // Use actual DOM state instead of a flag to avoid desync
+      const isCurrentlyVisible = this.settingsPanel.style.display !== "none";
+
       const sidebar = document.getElementById('sidebar');
       const sidebarButton = document.querySelector('#sidebar .hide_sidebar_button');
-      
-      if (this.isPanelOpen) {
+
+      if (!isCurrentlyVisible) {
         // Show sidebar if it's hidden
         if (sidebar && sidebar.classList.contains('closed')) {
-          // Try to use OSM's native toggle button
           if (sidebarButton) {
             sidebarButton.click();
           } else {
-            // Manual fallback
             sidebar.classList.remove('closed');
             const map = document.getElementById('map');
             if (map) {
@@ -500,15 +488,91 @@ if (window.location.hostname === "www.openstreetmap.org") {
             }
           }
         }
-        
+
+        // Refresh coordinate inputs before showing
+        this.updateCoordinates();
+
         // Show and position our panel
         this.settingsPanel.style.display = "block";
         if (sidebar && sidebar.firstChild !== this.settingsPanel) {
           sidebar.insertBefore(this.settingsPanel, sidebar.firstChild);
         }
       } else {
-        // Hide our panel
         this.settingsPanel.style.display = "none";
+      }
+    }
+
+    /**
+     * Render a mini-map preview of the graph on the canvas
+     * @param {Object} graph - Graph data with nodes and edges
+     */
+    renderPreview(graph) {
+      const container = this.settingsPanel.querySelector('#graphPreview');
+      const canvas = this.settingsPanel.querySelector('#previewCanvas');
+      const stats = this.settingsPanel.querySelector('#graphStats');
+      if (!canvas || !container) return;
+
+      container.style.display = 'block';
+
+      const uniqueEdges = graph.directed ? Math.floor(graph.edges.length / 2) : graph.edges.length;
+      stats.textContent = `${graph.nodes.length} nodes, ${graph.edges.length} edges`;
+
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      if (graph.nodes.length === 0) return;
+
+      // Compute bounds for mapping lat/lon to canvas pixels
+      let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+      for (const n of graph.nodes) {
+        if (n.lat < minLat) minLat = n.lat;
+        if (n.lat > maxLat) maxLat = n.lat;
+        if (n.lon < minLon) minLon = n.lon;
+        if (n.lon > maxLon) maxLon = n.lon;
+      }
+
+      const pad = 10;
+      const latRange = maxLat - minLat || 1;
+      const lonRange = maxLon - minLon || 1;
+      const scaleX = (w - 2 * pad) / lonRange;
+      const scaleY = (h - 2 * pad) / latRange;
+      const scale = Math.min(scaleX, scaleY);
+      const offX = pad + ((w - 2 * pad) - lonRange * scale) / 2;
+      const offY = pad + ((h - 2 * pad) - latRange * scale) / 2;
+
+      const toX = lon => offX + (lon - minLon) * scale;
+      const toY = lat => offY + (maxLat - lat) * scale; // flip Y
+
+      // Build node position lookup
+      const pos = new Map();
+      for (const n of graph.nodes) {
+        pos.set(n.id, { x: toX(n.lon), y: toY(n.lat) });
+      }
+
+      // Draw edges
+      ctx.strokeStyle = 'rgba(0, 116, 217, 0.15)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      for (const e of graph.edges) {
+        const a = pos.get(e.source);
+        const b = pos.get(e.target);
+        if (a && b) {
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+        }
+      }
+      ctx.stroke();
+
+      // Draw nodes
+      ctx.fillStyle = '#0074d9';
+      const r = graph.nodes.length > 500 ? 1 : 2;
+      for (const n of graph.nodes) {
+        const p = pos.get(n.id);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
 

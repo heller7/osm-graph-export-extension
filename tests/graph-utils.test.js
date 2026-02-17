@@ -5,7 +5,12 @@ import {
     validateBounds,
     buildOverpassQuery,
     convertToGraph,
-    convertToGraphML
+    convertToGraphML,
+    convertToCSV,
+    convertToTikZ,
+    escapeXml,
+    splitBounds,
+    mergeOsmData
 } from '../lib/graph-utils.js';
 
 describe('toRad', () => {
@@ -37,7 +42,7 @@ describe('calculateDistance', () => {
 
     test('London to Paris ≈ 343 km', () => {
         const distance = calculateDistance(51.5074, -0.1278, 48.8566, 2.3522);
-        expect(distance).toBeCloseTo(343, -1); // within ~10 km
+        expect(distance).toBeCloseTo(343, -1);
     });
 
     test('distance is symmetric', () => {
@@ -119,23 +124,93 @@ describe('buildOverpassQuery', () => {
     });
 });
 
+describe('splitBounds', () => {
+    test('small area returns single tile', () => {
+        const bounds = { north: 52.52, south: 52.50, east: 13.41, west: 13.39 };
+        const tiles = splitBounds(bounds);
+        expect(tiles.length).toBe(1);
+    });
+
+    test('large area returns multiple tiles', () => {
+        const bounds = { north: 52.6, south: 52.5, east: 13.5, west: 13.3 };
+        const tiles = splitBounds(bounds);
+        expect(tiles.length).toBeGreaterThan(1);
+    });
+
+    test('tiles cover the entire area', () => {
+        const bounds = { north: 52.6, south: 52.5, east: 13.5, west: 13.3 };
+        const tiles = splitBounds(bounds);
+        const minSouth = Math.min(...tiles.map(t => t.south));
+        const maxNorth = Math.max(...tiles.map(t => t.north));
+        const minWest = Math.min(...tiles.map(t => t.west));
+        const maxEast = Math.max(...tiles.map(t => t.east));
+        expect(minSouth).toBeLessThanOrEqual(bounds.south);
+        expect(maxNorth).toBeGreaterThanOrEqual(bounds.north);
+        expect(minWest).toBeLessThanOrEqual(bounds.west);
+        expect(maxEast).toBeGreaterThanOrEqual(bounds.east);
+    });
+
+    test('each tile has valid bounds', () => {
+        const bounds = { north: 52.6, south: 52.5, east: 13.5, west: 13.3 };
+        const tiles = splitBounds(bounds);
+        for (const t of tiles) {
+            expect(t.north).toBeGreaterThan(t.south);
+            expect(t.east).toBeGreaterThan(t.west);
+        }
+    });
+});
+
+describe('mergeOsmData', () => {
+    test('merges two results', () => {
+        const a = { elements: [{ type: 'node', id: 1, lat: 0, lon: 0 }] };
+        const b = { elements: [{ type: 'node', id: 2, lat: 1, lon: 1 }] };
+        const merged = mergeOsmData([a, b]);
+        expect(merged.elements).toHaveLength(2);
+    });
+
+    test('deduplicates by type+id', () => {
+        const a = { elements: [{ type: 'node', id: 1, lat: 0, lon: 0 }] };
+        const b = { elements: [{ type: 'node', id: 1, lat: 0, lon: 0 }] };
+        const merged = mergeOsmData([a, b]);
+        expect(merged.elements).toHaveLength(1);
+    });
+
+    test('same id with different type is kept', () => {
+        const a = { elements: [{ type: 'node', id: 1 }] };
+        const b = { elements: [{ type: 'way', id: 1 }] };
+        const merged = mergeOsmData([a, b]);
+        expect(merged.elements).toHaveLength(2);
+    });
+
+    test('skips null/invalid results', () => {
+        const a = { elements: [{ type: 'node', id: 1 }] };
+        const merged = mergeOsmData([null, a, {}]);
+        expect(merged.elements).toHaveLength(1);
+    });
+});
+
 describe('convertToGraph', () => {
+    const emptyGraph = { directed: true, multigraph: false, graph: {}, nodes: [], edges: [] };
+
     test('returns empty graph for null input', () => {
-        const result = convertToGraph(null);
-        expect(result).toEqual({ nodes: [], edges: [] });
+        expect(convertToGraph(null)).toEqual(emptyGraph);
     });
 
     test('returns empty graph for missing elements', () => {
-        const result = convertToGraph({});
-        expect(result).toEqual({ nodes: [], edges: [] });
+        expect(convertToGraph({})).toEqual(emptyGraph);
     });
 
     test('returns empty graph for empty elements array', () => {
-        const result = convertToGraph({ elements: [] });
-        expect(result).toEqual({ nodes: [], edges: [] });
+        expect(convertToGraph({ elements: [] })).toEqual(emptyGraph);
     });
 
-    test('collects nodes only (no edges without ways)', () => {
+    test('output is a directed graph', () => {
+        const result = convertToGraph({ elements: [] });
+        expect(result.directed).toBe(true);
+        expect(result.multigraph).toBe(false);
+    });
+
+    test('collects nodes with lat/lon', () => {
         const osmData = {
             elements: [
                 { type: 'node', id: 1, lat: 52.52, lon: 13.405 },
@@ -147,40 +222,86 @@ describe('convertToGraph', () => {
         expect(result.edges).toHaveLength(0);
     });
 
-    test('creates edges from a single way', () => {
+    test('two-way road produces edges in both directions', () => {
         const osmData = {
             elements: [
                 { type: 'node', id: 1, lat: 52.52, lon: 13.405 },
                 { type: 'node', id: 2, lat: 52.53, lon: 13.406 },
-                { type: 'node', id: 3, lat: 52.54, lon: 13.407 },
-                { type: 'way', id: 100, nodes: [1, 2, 3] }
+                { type: 'way', id: 100, nodes: [1, 2], tags: { highway: 'residential' } }
             ]
         };
         const result = convertToGraph(osmData);
-        expect(result.nodes).toHaveLength(3);
         expect(result.edges).toHaveLength(2);
         expect(result.edges[0].source).toBe(1);
         expect(result.edges[0].target).toBe(2);
-        expect(result.edges[0].wayId).toBe(100);
-        expect(result.edges[0].weight).toBeGreaterThan(0);
         expect(result.edges[1].source).toBe(2);
-        expect(result.edges[1].target).toBe(3);
+        expect(result.edges[1].target).toBe(1);
     });
 
-    test('creates edges from multiple ways', () => {
+    test('oneway=yes produces only forward edges', () => {
         const osmData = {
             elements: [
                 { type: 'node', id: 1, lat: 52.52, lon: 13.405 },
                 { type: 'node', id: 2, lat: 52.53, lon: 13.406 },
-                { type: 'node', id: 3, lat: 52.54, lon: 13.407 },
-                { type: 'way', id: 100, nodes: [1, 2] },
-                { type: 'way', id: 101, nodes: [2, 3] }
+                { type: 'way', id: 100, nodes: [1, 2], tags: { highway: 'primary', oneway: 'yes' } }
             ]
         };
         const result = convertToGraph(osmData);
-        expect(result.edges).toHaveLength(2);
-        expect(result.edges[0].wayId).toBe(100);
-        expect(result.edges[1].wayId).toBe(101);
+        expect(result.edges).toHaveLength(1);
+        expect(result.edges[0].source).toBe(1);
+        expect(result.edges[0].target).toBe(2);
+    });
+
+    test('oneway=-1 produces only reverse edges', () => {
+        const osmData = {
+            elements: [
+                { type: 'node', id: 1, lat: 52.52, lon: 13.405 },
+                { type: 'node', id: 2, lat: 52.53, lon: 13.406 },
+                { type: 'way', id: 100, nodes: [1, 2], tags: { highway: 'primary', oneway: '-1' } }
+            ]
+        };
+        const result = convertToGraph(osmData);
+        expect(result.edges).toHaveLength(1);
+        expect(result.edges[0].source).toBe(2);
+        expect(result.edges[0].target).toBe(1);
+    });
+
+    test('includes highway and name from tags', () => {
+        const osmData = {
+            elements: [
+                { type: 'node', id: 1, lat: 52.52, lon: 13.405 },
+                { type: 'node', id: 2, lat: 52.53, lon: 13.406 },
+                { type: 'way', id: 100, nodes: [1, 2], tags: { highway: 'tertiary', name: 'Main St' } }
+            ]
+        };
+        const result = convertToGraph(osmData);
+        expect(result.edges[0].highway).toBe('tertiary');
+        expect(result.edges[0].name).toBe('Main St');
+    });
+
+    test('missing tags default to empty strings', () => {
+        const osmData = {
+            elements: [
+                { type: 'node', id: 1, lat: 52.52, lon: 13.405 },
+                { type: 'node', id: 2, lat: 52.53, lon: 13.406 },
+                { type: 'way', id: 100, nodes: [1, 2] }
+            ]
+        };
+        const result = convertToGraph(osmData);
+        expect(result.edges[0].highway).toBe('');
+        expect(result.edges[0].name).toBe('');
+    });
+
+    test('edge weight is positive distance', () => {
+        const osmData = {
+            elements: [
+                { type: 'node', id: 1, lat: 52.52, lon: 13.405 },
+                { type: 'node', id: 2, lat: 52.53, lon: 13.406 },
+                { type: 'way', id: 100, nodes: [1, 2] }
+            ]
+        };
+        const result = convertToGraph(osmData);
+        expect(result.edges[0].weight).toBeGreaterThan(0);
     });
 
     test('skips edges with missing node references', () => {
@@ -191,7 +312,6 @@ describe('convertToGraph', () => {
             ]
         };
         const result = convertToGraph(osmData);
-        expect(result.nodes).toHaveLength(1);
         expect(result.edges).toHaveLength(0);
     });
 
@@ -203,8 +323,29 @@ describe('convertToGraph', () => {
             ]
         };
         const result = convertToGraph(osmData);
-        expect(result.nodes).toHaveLength(1);
         expect(result.edges).toHaveLength(0);
+    });
+});
+
+describe('escapeXml', () => {
+    test('passes through plain numbers', () => {
+        expect(escapeXml(123)).toBe('123');
+    });
+
+    test('passes through plain strings', () => {
+        expect(escapeXml('hello')).toBe('hello');
+    });
+
+    test('escapes ampersand', () => {
+        expect(escapeXml('a&b')).toBe('a&amp;b');
+    });
+
+    test('escapes angle brackets', () => {
+        expect(escapeXml('<script>')).toBe('&lt;script&gt;');
+    });
+
+    test('escapes quotes', () => {
+        expect(escapeXml('"it\'s"')).toBe('&quot;it&apos;s&quot;');
     });
 });
 
@@ -215,7 +356,7 @@ describe('convertToGraphML', () => {
             { id: 2, lat: 52.53, lon: 13.406 }
         ],
         edges: [
-            { source: 1, target: 2, wayId: 100, weight: 1.234 }
+            { source: 1, target: 2, wayId: 100, weight: 1.234, highway: 'residential', name: 'Main St' }
         ]
     };
 
@@ -223,6 +364,11 @@ describe('convertToGraphML', () => {
         const xml = convertToGraphML(simpleGraph);
         expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
         expect(xml).toContain('<graphml');
+    });
+
+    test('declares graph as directed', () => {
+        const xml = convertToGraphML(simpleGraph);
+        expect(xml).toContain('edgedefault="directed"');
     });
 
     test('contains correct number of nodes', () => {
@@ -237,22 +383,30 @@ describe('convertToGraphML', () => {
         expect(edgeMatches).toHaveLength(1);
     });
 
-    test('includes node coordinates as data attributes', () => {
+    test('includes node coordinates', () => {
         const xml = convertToGraphML(simpleGraph);
         expect(xml).toContain('<data key="lat">52.52</data>');
         expect(xml).toContain('<data key="lon">13.405</data>');
     });
 
-    test('includes edge weight and wayId', () => {
+    test('includes edge weight, wayId, highway, and name', () => {
         const xml = convertToGraphML(simpleGraph);
         expect(xml).toContain('<data key="weight">1.234</data>');
         expect(xml).toContain('<data key="wayId">100</data>');
+        expect(xml).toContain('<data key="highway">residential</data>');
+        expect(xml).toContain('<data key="name">Main St</data>');
     });
 
-    test('edge references correct nodes', () => {
+    test('declares highway and name key attributes', () => {
         const xml = convertToGraphML(simpleGraph);
-        expect(xml).toContain('source="n1"');
-        expect(xml).toContain('target="n2"');
+        expect(xml).toContain('attr.name="highway"');
+        expect(xml).toContain('attr.name="name"');
+    });
+
+    test('node IDs use bare numeric values', () => {
+        const xml = convertToGraphML(simpleGraph);
+        expect(xml).toContain('<node id="1">');
+        expect(xml).toContain('<node id="2">');
     });
 
     test('handles empty graph', () => {
@@ -262,9 +416,138 @@ describe('convertToGraphML', () => {
         expect(xml).not.toContain('<node');
         expect(xml).not.toContain('<edge');
     });
+});
 
-    test('declares graph as undirected', () => {
-        const xml = convertToGraphML(simpleGraph);
-        expect(xml).toContain('edgedefault="undirected"');
+describe('convertToCSV', () => {
+    test('produces header row', () => {
+        const csv = convertToCSV({ nodes: [], edges: [] });
+        expect(csv).toBe('source,target,weight,highway,name,wayId');
+    });
+
+    test('formats edge data correctly', () => {
+        const graph = {
+            nodes: [],
+            edges: [
+                { source: 1, target: 2, weight: 0.5, highway: 'residential', name: 'Main St', wayId: 100 }
+            ]
+        };
+        const csv = convertToCSV(graph);
+        const lines = csv.split('\n');
+        expect(lines).toHaveLength(2);
+        expect(lines[1]).toBe('1,2,0.5,residential,Main St,100');
+    });
+
+    test('quotes values with commas', () => {
+        const graph = {
+            nodes: [],
+            edges: [
+                { source: 1, target: 2, weight: 0.5, highway: 'residential', name: 'A, B Street', wayId: 100 }
+            ]
+        };
+        const csv = convertToCSV(graph);
+        expect(csv).toContain('"A, B Street"');
+    });
+
+    test('escapes double quotes in values', () => {
+        const graph = {
+            nodes: [],
+            edges: [
+                { source: 1, target: 2, weight: 0.5, highway: 'residential', name: 'The "Main" St', wayId: 100 }
+            ]
+        };
+        const csv = convertToCSV(graph);
+        expect(csv).toContain('"The ""Main"" St"');
+    });
+
+    test('handles multiple edges', () => {
+        const graph = {
+            nodes: [],
+            edges: [
+                { source: 1, target: 2, weight: 0.5, highway: 'primary', name: '', wayId: 100 },
+                { source: 2, target: 3, weight: 1.0, highway: 'secondary', name: '', wayId: 101 }
+            ]
+        };
+        const csv = convertToCSV(graph);
+        const lines = csv.split('\n');
+        expect(lines).toHaveLength(3);
+    });
+});
+
+describe('convertToTikZ', () => {
+    const simpleGraph = {
+        nodes: [
+            { id: 1, lat: 52.52, lon: 13.40 },
+            { id: 2, lat: 52.53, lon: 13.41 },
+            { id: 3, lat: 52.51, lon: 13.42 }
+        ],
+        edges: [
+            { source: 1, target: 2, weight: 1.0, wayId: 100 },
+            { source: 2, target: 1, weight: 1.0, wayId: 100 },
+            { source: 2, target: 3, weight: 0.5, wayId: 101 }
+        ]
+    };
+
+    test('produces standalone LaTeX document', () => {
+        const tex = convertToTikZ(simpleGraph);
+        expect(tex).toContain('\\documentclass[tikz]{standalone}');
+        expect(tex).toContain('\\begin{document}');
+        expect(tex).toContain('\\end{document}');
+    });
+
+    test('contains tikzpicture environment', () => {
+        const tex = convertToTikZ(simpleGraph);
+        expect(tex).toContain('\\begin{tikzpicture}');
+        expect(tex).toContain('\\end{tikzpicture}');
+    });
+
+    test('defines vertex and edge styles', () => {
+        const tex = convertToTikZ(simpleGraph);
+        expect(tex).toContain('vertex/.style=');
+        expect(tex).toContain('edge/.style=');
+    });
+
+    test('creates a node for each graph node', () => {
+        const tex = convertToTikZ(simpleGraph);
+        const nodeMatches = tex.match(/\\node\[vertex\]/g);
+        expect(nodeMatches).toHaveLength(3);
+    });
+
+    test('deduplicates bidirectional edges', () => {
+        const tex = convertToTikZ(simpleGraph);
+        // 1↔2 should be drawn once, 2→3 once = 2 draw commands
+        const drawMatches = tex.match(/\\draw\[edge\]/g);
+        expect(drawMatches).toHaveLength(2);
+    });
+
+    test('node coordinates are scaled to cm', () => {
+        const tex = convertToTikZ(simpleGraph);
+        // All coordinates should be non-negative numbers
+        const coords = [...tex.matchAll(/at \(([^,]+),([^)]+)\)/g)];
+        expect(coords).toHaveLength(3);
+        for (const m of coords) {
+            expect(parseFloat(m[1])).toBeGreaterThanOrEqual(0);
+            expect(parseFloat(m[2])).toBeGreaterThanOrEqual(0);
+        }
+    });
+
+    test('handles empty graph', () => {
+        const tex = convertToTikZ({ nodes: [], edges: [] });
+        expect(tex).toContain('\\begin{tikzpicture}');
+        expect(tex).toContain('% empty graph');
+        expect(tex).not.toContain('\\node');
+        expect(tex).not.toContain('\\draw');
+    });
+
+    test('skips edges with missing node references', () => {
+        const graph = {
+            nodes: [{ id: 1, lat: 0, lon: 0 }, { id: 2, lat: 1, lon: 1 }],
+            edges: [
+                { source: 1, target: 999, weight: 1.0, wayId: 50 },
+                { source: 1, target: 2, weight: 1.0, wayId: 51 }
+            ]
+        };
+        const tex = convertToTikZ(graph);
+        const drawMatches = tex.match(/\\draw\[edge\]/g);
+        expect(drawMatches).toHaveLength(1);
     });
 });

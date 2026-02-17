@@ -7,7 +7,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Check if there's any graph data available
     chrome.runtime.sendMessage({ type: 'GET_GRAPH' }, response => {
-        if (response && response.success && response.data) {
+        if (chrome.runtime.lastError) {
+            graphStatus.textContent = 'Could not reach extension';
+            return;
+        }
+        if (response && response.success && response.data &&
+            Array.isArray(response.data.nodes) && Array.isArray(response.data.edges)) {
             graphData = response.data;
             graphStatus.textContent = `Graph contains ${graphData.nodes.length} nodes and ${graphData.edges.length} edges`;
             exportButton.disabled = false;
@@ -26,6 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
             format: exportFormat.value,
             data: graphData
         }, response => {
+            if (chrome.runtime.lastError) {
+                graphStatus.textContent = 'Extension error: ' + chrome.runtime.lastError.message;
+                return;
+            }
             if (response && response.success) {
                 // Create and trigger download
                 const blob = new Blob([response.data], {

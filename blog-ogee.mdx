@@ -1,0 +1,93 @@
+---
+title: 'ogee: Export OSM Road Networks as Graphs from Your Browser'
+date: '2026-02-17'
+tags: ['graphs', 'openstreetmap', 'chrome extension', 'networkx', 'tikz', 'english']
+draft: false
+summary: 'A Chrome extension that turns any OpenStreetMap view into a directed graph — exportable as JSON, GraphML, CSV, or LaTeX TikZ.'
+---
+
+When working with road networks — for shortest-path algorithms, traffic simulations, or operations research projects — the first step is always the same: get graph data. Tools like [OSMnx](https://github.com/gboeing/osmnx) do this well from Python, but sometimes you want to grab a quick subgraph of the area you are looking at *right now* without leaving the browser. That is what [ogee](https://github.com/heller7/osm-graph-export-extension) (OSM Graph Export Extension) does.
+
+## What it does
+
+ogee is a Chrome extension that adds an "Export" button to [openstreetmap.org](https://www.openstreetmap.org). Click it, and a sidebar panel appears with bounding-box coordinates pre-filled from your current map view. Hit "Generate Graph", and the extension fetches road data from the [Overpass API](https://overpass-api.de/), converts it into a directed graph, shows a canvas preview, and lets you download the result in one of four formats: JSON, GraphML, CSV, or LaTeX TikZ.
+
+The graph is directed: one-way streets produce a single edge, two-way streets produce edges in both directions. Edge weights are real-world distances in kilometers, computed via the Haversine formula. Each edge also carries the OSM `highway` type (e.g. `residential`, `primary`) and the street `name` where available.
+
+## Architecture in 30 seconds
+
+The extension follows Chrome's Manifest V3 message-passing pattern:
+
+1. **Content script** — injected into openstreetmap.org, manages the UI (nav button, sidebar panel, coordinate inputs, canvas preview).
+2. **Background service worker** — receives bounding-box coordinates, queries the Overpass API, converts raw OSM elements into a node-link graph, and serializes to the requested export format.
+3. **Popup** — alternative lightweight UI accessible from the extension icon.
+
+For larger areas the background worker automatically tiles the bounding box into ~5 km chunks, fetches them sequentially (to stay within Overpass rate limits), and merges the results with deduplication.
+
+All pure logic — graph conversion, format serialization, bounds validation, tiling — lives in a shared `lib/graph-utils.js` module, which is covered by a Jest test suite.
+
+## Using the output
+
+### NetworkX (Python)
+
+The JSON export uses [NetworkX's node-link format](https://networkx.org/documentation/stable/reference/readwrite/generated/networkx.readwrite.json_graph.node_link_graph.html), so importing is a one-liner:
+
+```python
+import json, networkx as nx
+from networkx.readwrite import json_graph
+
+with open("osm-graph.json") as f:
+    G = json_graph.node_link_graph(json.load(f))
+
+print(f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+```
+
+GraphML works just as directly:
+
+```python
+G = nx.read_graphml("osm-graph.graphml", node_type=int)
+```
+
+### Plotting
+
+Since every node carries `lat` and `lon` attributes, plotting the network on a 2D plane is straightforward:
+
+```python
+import matplotlib.pyplot as plt
+
+pos = {n: (d["lon"], d["lat"]) for n, d in G.nodes(data=True)}
+nx.draw(G, pos, node_size=2, width=0.3, arrows=False)
+plt.axis("equal")
+plt.show()
+```
+
+### LaTeX TikZ
+
+The TikZ export produces a standalone `.tex` file that compiles directly with `pdflatex`. Node positions are projected from geographic coordinates to a local coordinate system scaled to 10 cm on the longer axis. Bidirectional edges are drawn once to keep the output clean.
+
+```latex
+\documentclass[tikz]{standalone}
+\usepackage{tikz}
+\begin{document}
+\begin{tikzpicture}[
+  vertex/.style={circle, fill=black, inner sep=0pt, minimum size=1.5pt},
+  edge/.style={draw, thin, black!40},
+]
+  \node[vertex] (n0) at (0.0000,5.0000) {};
+  \node[vertex] (n1) at (5.0000,10.0000) {};
+  ...
+  \draw[edge] (n0) -- (n1);
+  ...
+\end{tikzpicture}
+\end{document}
+```
+
+This is useful when you need a road network figure in a paper or thesis and want full control over styling. Since it is just TikZ, you can adjust colors, line widths, add labels, or overlay additional annotations directly in LaTeX.
+
+## Limitations
+
+- The Overpass API has rate limits and can be slow for very large areas. ogee mitigates this with tiling, but city-scale exports can still take a while.
+- Minor road types (footways, cycleways, service roads, tracks) are excluded by default — the focus is on the drivable road network.
+- The extension only runs on `openstreetmap.org`. It does not work on other map providers.
+
+For heavy-duty analysis involving entire cities or custom filtering, [OSMnx](https://github.com/gboeing/osmnx) remains the better tool. ogee fills a different niche: quick, visual, browser-native graph extraction for the area you happen to be looking at.

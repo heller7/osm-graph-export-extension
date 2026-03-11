@@ -37,7 +37,17 @@ async function fetchTile(bounds) {
     });
 
     if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const status = response.status;
+        const messages = {
+            400: 'Bad request — the Overpass query may be malformed.',
+            404: 'Overpass API endpoint not found.',
+            429: 'Too many requests — the Overpass API is rate-limiting you. Please wait a minute and try again.',
+            504: 'Gateway timeout — the selected area is too large or the server is busy. Try a smaller bounding box.'
+        };
+        if (status >= 500) {
+            throw new Error(messages[status] || `Overpass API server error (${status}). The service may be temporarily down — try again later.`);
+        }
+        throw new Error(messages[status] || `Request failed (HTTP ${status}).`);
     }
 
     return await response.json();
@@ -72,6 +82,10 @@ async function fetchOsmData(bounds) {
         return mergeOsmData(results);
     } catch (error) {
         console.error('Error fetching OSM data:', error);
+        // Make network-level errors user-readable
+        if (error instanceof TypeError && error.message === 'Failed to fetch') {
+            throw new Error('Network error — could not reach the Overpass API. Check your internet connection.');
+        }
         throw error;
     }
 }

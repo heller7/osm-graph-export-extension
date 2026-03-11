@@ -17,6 +17,7 @@ if (window.location.hostname === "www.openstreetmap.org") {
       this.generateButton = null;      // Button in the navigation bar
       this.settingsPanel = null;       // Panel containing settings and controls
       this.graphData = null;           // Store generated graph data
+      this.graphOverlayVisible = false; // Whether graph is shown on map
     }
 
     /**
@@ -105,6 +106,7 @@ if (window.location.hostname === "www.openstreetmap.org") {
         display: none;
         border-bottom: 1px solid #ccc;
         overflow-y: auto;
+        max-height: calc(100vh - 60px);
     `;
 
       this.settingsPanel.innerHTML = `
@@ -155,6 +157,7 @@ if (window.location.hostname === "www.openstreetmap.org") {
                     <label for="south">South</label>
                 </div>
             </div>
+            <button id="drawBounds" class="settings-button" style="background:#457b9d;">Draw on Map</button>
         </div>
         <div class="settings-section">
             <button id="generateGraph" class="settings-button">Generate Graph</button>
@@ -163,6 +166,9 @@ if (window.location.hostname === "www.openstreetmap.org") {
                     width:100%; border:1px solid #ccc; border-radius:4px; background:#f9f9f9;
                 "></canvas>
                 <div id="graphStats" style="font-size:12px; color:#666; margin-top:4px;"></div>
+                <button id="toggleOverlay" class="settings-button" style="
+                    margin-top:8px; background:#2ecc40;
+                " disabled>Show on Map</button>
             </div>
         </div>
         <div class="settings-section">
@@ -323,6 +329,26 @@ if (window.location.hostname === "www.openstreetmap.org") {
       const exportButton = this.settingsPanel.querySelector("#exportGraph");
       exportButton.disabled = true;
       exportButton.style.opacity = "0.5";
+
+      // Map overlay toggle button
+      this.settingsPanel
+        .querySelector("#toggleOverlay")
+        .addEventListener("click", () => {
+          this.toggleMapOverlay();
+        });
+
+      // Draw bounding box on map
+      const drawBtn = this.settingsPanel.querySelector("#drawBounds");
+      drawBtn.addEventListener("click", () => {
+        this.startDrawMode(drawBtn);
+      });
+
+      // Listen for bounds drawn on the map (from map-overlay.js MAIN world)
+      window.addEventListener('message', (event) => {
+        if (event.data && event.data.type === 'OSM_GRAPH_BOUNDS_DRAWN') {
+          this.onBoundsDrawn(event.data.bounds);
+        }
+      });
     }
 
     /**
@@ -355,6 +381,9 @@ if (window.location.hostname === "www.openstreetmap.org") {
       const generateButton = this.settingsPanel.querySelector("#generateGraph");
 
       this.showToast("Generating graph...");
+
+      // Clear any drawn bounding box rectangle from the map
+      window.postMessage({ type: 'OSM_GRAPH_DRAW', action: 'clear' }, '*');
 
       // Disable button during request
       if (generateButton) {
@@ -390,6 +419,19 @@ if (window.location.hostname === "www.openstreetmap.org") {
               if (exportButton) {
                 exportButton.disabled = false;
                 exportButton.style.opacity = "1";
+              }
+
+              // Enable and reset map overlay button
+              const overlayBtn = this.settingsPanel.querySelector("#toggleOverlay");
+              if (overlayBtn) {
+                overlayBtn.disabled = false;
+                overlayBtn.style.opacity = "1";
+                // Hide any previous overlay since graph data changed
+                if (this.graphOverlayVisible) {
+                  window.postMessage({ type: 'OSM_GRAPH_OVERLAY', action: 'hide' }, '*');
+                  this.graphOverlayVisible = false;
+                  this.updateOverlayButtonState();
+                }
               }
             } else {
               const errorMessage = response ? response.error : "Unknown error occurred";
@@ -573,6 +615,89 @@ if (window.location.hostname === "www.openstreetmap.org") {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fill();
+      }
+    }
+
+    /**
+     * Enter draw mode — user draws a bounding box rectangle on the map
+     */
+    startDrawMode(drawBtn) {
+      if (this._drawing) {
+        // Cancel draw mode
+        window.postMessage({ type: 'OSM_GRAPH_DRAW', action: 'cancel' }, '*');
+        this._drawing = false;
+        drawBtn.textContent = 'Draw on Map';
+        drawBtn.style.background = '#457b9d';
+        return;
+      }
+
+      this._drawing = true;
+      drawBtn.textContent = 'Cancel Drawing';
+      drawBtn.style.background = '#e63946';
+      this.showToast('Click and drag on the map to draw a bounding box');
+      window.postMessage({ type: 'OSM_GRAPH_DRAW', action: 'start' }, '*');
+    }
+
+    /**
+     * Called when the user finishes drawing a rectangle on the map
+     */
+    onBoundsDrawn(bounds) {
+      this._drawing = false;
+      const drawBtn = this.settingsPanel.querySelector('#drawBounds');
+      if (drawBtn) {
+        drawBtn.textContent = 'Draw on Map';
+        drawBtn.style.background = '#457b9d';
+      }
+
+      // Update coordinate inputs
+      const northInput = this.settingsPanel.querySelector('#north');
+      const southInput = this.settingsPanel.querySelector('#south');
+      const eastInput = this.settingsPanel.querySelector('#east');
+      const westInput = this.settingsPanel.querySelector('#west');
+
+      if (northInput && southInput && eastInput && westInput) {
+        northInput.value = bounds.north.toFixed(4);
+        southInput.value = bounds.south.toFixed(4);
+        eastInput.value = bounds.east.toFixed(4);
+        westInput.value = bounds.west.toFixed(4);
+      }
+
+      this.showToast('Bounding box set from map selection', 'success');
+    }
+
+    /**
+     * Show or hide the graph overlay on the map.
+     * Communicates with map-overlay.js (MAIN world) via postMessage.
+     */
+    toggleMapOverlay() {
+      if (this.graphOverlayVisible) {
+        window.postMessage({ type: 'OSM_GRAPH_OVERLAY', action: 'hide' }, '*');
+        this.graphOverlayVisible = false;
+      } else {
+        if (!this.graphData) return;
+        window.postMessage({
+          type: 'OSM_GRAPH_OVERLAY',
+          action: 'show',
+          graph: this.graphData
+        }, '*');
+        this.graphOverlayVisible = true;
+      }
+
+      this.updateOverlayButtonState();
+    }
+
+    /**
+     * Update the overlay toggle button appearance
+     */
+    updateOverlayButtonState() {
+      const btn = this.settingsPanel.querySelector('#toggleOverlay');
+      if (!btn) return;
+      if (this.graphOverlayVisible) {
+        btn.textContent = 'Hide from Map';
+        btn.style.background = '#e63946';
+      } else {
+        btn.textContent = 'Show on Map';
+        btn.style.background = '#2ecc40';
       }
     }
 
